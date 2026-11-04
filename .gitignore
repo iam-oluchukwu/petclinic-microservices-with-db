@@ -23,3 +23,13 @@ generated/
 
 # Terraform
 **/.terraform/
+
+# Terraform local state, plans and sensitive variables
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/*.tfvars
+**/*.tfvars.json
+**/.terraform.tfstate.lock.info
+**/crash.log
+**/crash.*.log
