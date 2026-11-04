@@ -1,0 +1,14 @@
+variable "mykey" {}
+variable "ami" {
+  description = "amazon linux 2023 ami"
+}
+variable "region" {}
+variable "instance_type" {}
+variable "jenkins_server_secgr" {}
+variable "jenkins-server-tag" {}
+variable "jenkins-profile" {}
+variable "jenkins-role" {}
+variable "allowed_ssh_cidr" {
+  description = "Trusted public IPv4 CIDR for SSH access"
+  type        = string
+}
