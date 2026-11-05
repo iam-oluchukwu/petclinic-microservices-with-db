@@ -140,6 +140,15 @@ resource "aws_security_group" "master" {
     cidr_blocks = [var.admin_cidr]
   }
 
+  # QA NodePort access from Jenkins
+  ingress {
+    description     = "QA NodePort from Jenkins"
+    from_port       = 30001
+    to_port         = 30001
+    protocol        = "tcp"
+    security_groups = ["sg-02213dd43ca705120"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -258,7 +267,7 @@ resource "aws_instance" "nodes" {
 
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = "t3a.medium"
-  key_name                    = "Linux-key-pair"
+  key_name                    = var.qa_key_name
   subnet_id                   = data.aws_subnet.qa.id
   associate_public_ip_address = true
 
@@ -298,4 +307,10 @@ output "worker-1-ip" {
 
 output "worker-2-ip" {
   value = aws_instance.nodes["worker-2"].public_ip
+}
+
+variable "qa_key_name" {
+  description = "SSH key pair for Kubernetes QA instances"
+  type        = string
+  default     = "Linux-key-pair"
 }

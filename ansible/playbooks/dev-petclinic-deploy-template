@@ -43,6 +43,20 @@
       args:
         executable: /bin/bash
 
+      
+    - name: Create Petclinic MySQL credentials
+      no_log: true
+      environment:
+        MYSQL_ROOT_PASSWORD: "{{ lookup('env', 'MYSQL_ROOT_PASSWORD') }}"
+      ansible.builtin.shell: |
+        set -eu
+        kubectl -n petclinic-dev create secret generic petclinic-mysql-credentials \
+          --from-literal=root-password="$MYSQL_ROOT_PASSWORD" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      args:
+        executable: /bin/bash
+  
+
     - name: Create or update ECR image pull secret
       no_log: true
       ansible.builtin.shell: |
