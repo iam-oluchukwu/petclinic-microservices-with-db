@@ -1,0 +1,274 @@
+---
+# MSP-16: QA Kubernetes cluster setup on the existing three EC2 nodes.
+# Adapted from the course README for Ubuntu 22.04 and Kubernetes v1.36.
+# Inventory groups must be role_master (one node) and role_worker (two nodes).
+# Run from Jenkins with the existing AWS dynamic inventory and SSH credential.
+
+- name: Prepare Ubuntu nodes and install Kubernetes packages
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    kubernetes_minor: "v1.36"
+  tasks:
+    - name: Verify supported Ubuntu release and CPU architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Ubuntu'
+          - ansible_facts['distribution_version'] is version('22.04', '>=')
+          - ansible_facts['architecture'] == 'x86_64'
+        fail_msg: 'This lab playbook expects Ubuntu >= 22.04 on x86_64 EC2.'
+
+    - name: Disable swap immediately
+      ansible.builtin.command: swapoff -a
+      when: ansible_facts['swaptotal_mb'] | int > 0
+
+    - name: Keep swap disabled after reboot
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#\n]+\s+\S+\s+swap\s+.*)$'
+        replace: '# \1'
+
+    - name: Load Kubernetes kernel modules after reboot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          overlay
+          br_netfilter
+        mode: '0644'
+
+    - name: Load required modules now
+      ansible.builtin.command: "modprobe {{ item }}"
+      loop:
+        - overlay
+        - br_netfilter
+      changed_when: false
+
+    - name: Set network sysctl parameters
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes.conf
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+        mode: '0644'
+      notify: Apply kernel networking settings
+
+    - name: Install tools and containerd
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gpg
+          - apt-transport-https
+          - containerd
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create containerd configuration directory
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Generate default containerd configuration when absent
+      ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+      notify: Restart containerd
+
+    - name: Configure containerd to use systemd cgroups
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup\s*=\s*false'
+        replace: 'SystemdCgroup = true'
+      notify: Restart containerd
+
+    - name: Ensure the containerd CRI plugin is enabled
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'disabled_plugins\s*=\s*\[\s*"cri"\s*\]'
+        replace: 'disabled_plugins = []'
+      notify: Restart containerd
+
+    - name: Start and enable containerd
+      ansible.builtin.systemd:
+        name: containerd
+        enabled: true
+        state: started
+
+    - name: Ensure apt keyrings directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Install Kubernetes apt key
+      ansible.builtin.get_url:
+        url: "https://pkgs.k8s.io/core:/stable:/{{ kubernetes_minor }}/deb/Release.key"
+        dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+        mode: '0644'
+
+    - name: Configure official Kubernetes apt repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/{{ kubernetes_minor }}/deb/ /\n"
+        mode: '0644'
+
+    - name: Install kubelet, kubeadm, and kubectl
+      ansible.builtin.apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: true
+
+    - name: Hold Kubernetes package versions
+      ansible.builtin.command: apt-mark hold kubelet kubeadm kubectl
+      changed_when: false
+
+    - name: Enable kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: true
+
+    - name: Apply any pending systemd and sysctl changes
+      ansible.builtin.meta: flush_handlers
+
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+
+    - name: Apply kernel networking settings
+      ansible.builtin.command: sysctl --system
+      changed_when: false
+
+- name: Initialize control plane and install Flannel and Helm
+  hosts: role_master
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require exactly one master in inventory
+      ansible.builtin.assert:
+        that:
+          - groups.get('role_master', []) | length == 1
+        fail_msg: 'Expected exactly one EC2 instance tagged Role=master.'
+
+    - name: Check whether Kubernetes control plane is initialized
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: control_plane_config
+
+    - name: Initialize Kubernetes control plane if necessary
+      ansible.builtin.command:
+        argv:
+          - kubeadm
+          - init
+          - "--apiserver-advertise-address={{ inventory_hostname }}"
+          - "--pod-network-cidr=10.244.0.0/16"
+          - '--cri-socket=unix:///run/containerd/containerd.sock'
+      when: not control_plane_config.stat.exists
+
+    - name: Create kubeconfig folder for ubuntu
+      ansible.builtin.file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0700'
+
+    - name: Copy admin kubeconfig for ubuntu
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ubuntu/.kube/config
+        remote_src: true
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    - name: Install Flannel CNI from an official release artifact
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig=/etc/kubernetes/admin.conf
+          - apply
+          - -f
+          - https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      register: flannel_result
+      retries: 3
+      delay: 10
+      until: flannel_result.rc == 0
+
+    - name: Generate a fresh worker join command (not printed to logs)
+      ansible.builtin.command: kubeadm token create --print-join-command --ttl 2h
+      register: join_command_for_workers
+      no_log: true
+      changed_when: false
+
+    - name: Download Helm 3 installer
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get-helm-3.sh
+        mode: '0755'
+
+    - name: Install Helm 3
+      ansible.builtin.command: bash /tmp/get-helm-3.sh
+      args:
+        creates: /usr/local/bin/helm
+
+- name: Join worker EC2 instances to Kubernetes
+  hosts: role_worker
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check if node has already joined
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: worker_kubelet_config
+
+    - name: Join worker to the control plane
+      ansible.builtin.shell: >-
+        {{ hostvars[groups['role_master'][0]].join_command_for_workers.stdout }}
+        --cri-socket unix:///run/containerd/containerd.sock
+      args:
+        executable: /bin/bash
+      when: not worker_kubelet_config.stat.exists
+      no_log: true
+
+- name: Verify Kubernetes nodes are Ready
+  hosts: role_master
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for all nodes to become Ready
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig=/etc/kubernetes/admin.conf
+          - wait
+          - --for=condition=Ready
+          - nodes
+          - --all
+          - --timeout=300s
+      changed_when: false
+
+    - name: Show Kubernetes nodes
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig=/etc/kubernetes/admin.conf
+          - get
+          - nodes
+          - -o
+          - wide
+      register: cluster_nodes
+      changed_when: false
+
+    - name: Display cluster nodes
+      ansible.builtin.debug:
+        var: cluster_nodes.stdout_lines
