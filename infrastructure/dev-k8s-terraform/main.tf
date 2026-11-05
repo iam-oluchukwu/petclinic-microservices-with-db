@@ -1,3 +1,4 @@
+
 terraform {
   required_providers {
     aws = {
@@ -11,6 +12,10 @@ provider "aws" {
   region = "us-east-1"
 }
 
+# ---------------------------------------------
+# Variables
+# ---------------------------------------------
+
 variable "admin_cidr" {
   type        = string
   description = "Administrator public IPv4 address in /32 format"
@@ -21,6 +26,10 @@ variable "admin_cidr" {
   }
 }
 
+# ---------------------------------------------
+# Common resource tags
+# ---------------------------------------------
+
 locals {
   common_tags = {
     Project     = "tera-kube-ans"
@@ -28,7 +37,10 @@ locals {
   }
 }
 
-# Existing AWS network
+# ---------------------------------------------
+# Existing AWS Network
+# ---------------------------------------------
+
 data "aws_vpc" "default" {
   id = "vpc-098a488fcca7d1dac"
 }
@@ -37,7 +49,10 @@ data "aws_subnet" "qa" {
   id = "subnet-09012f8b6b8f07421"
 }
 
-# Current official Ubuntu 22.04 image
+# ---------------------------------------------
+# Ubuntu 22.04 AMI
+# ---------------------------------------------
+
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"]
@@ -53,7 +68,10 @@ data "aws_ami" "ubuntu" {
   }
 }
 
-# Internal traffic between Kubernetes nodes
+# ---------------------------------------------
+# Kubernetes Internal Communication
+# ---------------------------------------------
+
 resource "aws_security_group" "mutual" {
   name   = "petclinic-k8s-mutual-sec-group"
   vpc_id = data.aws_vpc.default.id
@@ -78,11 +96,15 @@ resource "aws_security_group" "mutual" {
   }
 }
 
-# Kubernetes master security group
+# ---------------------------------------------
+# Kubernetes Master Security Group
+# ---------------------------------------------
+
 resource "aws_security_group" "master" {
   name   = "petclinic-k8s-master-sec-group"
   vpc_id = data.aws_vpc.default.id
 
+  # Administrator SSH access
   ingress {
     description = "Administrator SSH"
     from_port   = 22
@@ -91,6 +113,16 @@ resource "aws_security_group" "master" {
     cidr_blocks = [var.admin_cidr]
   }
 
+  # MSP-16: SSH access from Jenkins for Ansible
+  ingress {
+    description     = "SSH from Jenkins for Ansible"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = ["sg-02213dd43ca705120"]
+  }
+
+  # Administrator Kubernetes API access
   ingress {
     description = "Administrator Kubernetes API"
     from_port   = 6443
@@ -99,6 +131,7 @@ resource "aws_security_group" "master" {
     cidr_blocks = [var.admin_cidr]
   }
 
+  # Administrator NodePort access
   ingress {
     description = "Administrator NodePort access"
     from_port   = 30000
@@ -119,11 +152,15 @@ resource "aws_security_group" "master" {
   }
 }
 
-# Kubernetes worker security group
+# ---------------------------------------------
+# Kubernetes Worker Security Group
+# ---------------------------------------------
+
 resource "aws_security_group" "worker" {
   name   = "petclinic-k8s-worker-sec-group"
   vpc_id = data.aws_vpc.default.id
 
+  # Administrator SSH access
   ingress {
     description = "Administrator SSH"
     from_port   = 22
@@ -132,6 +169,16 @@ resource "aws_security_group" "worker" {
     cidr_blocks = [var.admin_cidr]
   }
 
+  # MSP-16: SSH access from Jenkins for Ansible
+  ingress {
+    description     = "SSH from Jenkins for Ansible"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = ["sg-02213dd43ca705120"]
+  }
+
+  # Administrator NodePort access
   ingress {
     description = "Administrator NodePort access"
     from_port   = 30000
@@ -152,7 +199,10 @@ resource "aws_security_group" "worker" {
   }
 }
 
-# IAM role for Kubernetes master
+# ---------------------------------------------
+# IAM Assume Role Policy for EC2
+# ---------------------------------------------
+
 data "aws_iam_policy_document" "ec2_assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -164,22 +214,37 @@ data "aws_iam_policy_document" "ec2_assume" {
   }
 }
 
+# ---------------------------------------------
+# IAM Role for Kubernetes Master
+# ---------------------------------------------
+
 resource "aws_iam_role" "master" {
   name               = "petclinic-master-server-role"
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
 }
+
+# ---------------------------------------------
+# Attach Amazon S3 Read-Only Policy
+# ---------------------------------------------
 
 resource "aws_iam_role_policy_attachment" "master_s3" {
   role       = aws_iam_role.master.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
 }
 
+# ---------------------------------------------
+# IAM Instance Profile
+# ---------------------------------------------
+
 resource "aws_iam_instance_profile" "master" {
   name = "petclinic-master-server-profile"
   role = aws_iam_role.master.name
 }
 
-# Three Kubernetes EC2 instances
+# ---------------------------------------------
+# Kubernetes EC2 Nodes
+# ---------------------------------------------
+
 locals {
   nodes = {
     kube-master = "master"
@@ -197,11 +262,14 @@ resource "aws_instance" "nodes" {
   subnet_id                   = data.aws_subnet.qa.id
   associate_public_ip_address = true
 
+  # Attach internal communication SG and
+  # the appropriate master or worker SG
   vpc_security_group_ids = [
     aws_security_group.mutual.id,
     each.value == "master" ? aws_security_group.master.id : aws_security_group.worker.id
   ]
 
+  # Only master receives the IAM instance profile
   iam_instance_profile = each.value == "master" ? aws_iam_instance_profile.master.name : null
 
   root_block_device {
@@ -215,6 +283,10 @@ resource "aws_instance" "nodes" {
     Role = each.value
   })
 }
+
+# ---------------------------------------------
+# Terraform Outputs
+# ---------------------------------------------
 
 output "kube-master-ip" {
   value = aws_instance.nodes["kube-master"].public_ip
