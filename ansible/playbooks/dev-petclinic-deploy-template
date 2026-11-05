@@ -76,12 +76,49 @@
       args:
         executable: /bin/bash
 
-    - name: Deploy Petclinic Helm release
-      ansible.builtin.shell: |
-        AWS_REGION="{{ aws_region }}" helm upgrade --install \
-          petclinic-app-release stable-petclinic/petclinic_chart \
-          --version "{{ chart_version }}" \
-          --namespace petclinic-dev \
-          --wait --timeout 10m
-      args:
-        executable: /bin/bash
+    
+    - name: Deploy Petclinic with diagnostics
+      block:
+        - name: Deploy Petclinic Helm release
+          ansible.builtin.shell: |
+            AWS_REGION="{{ aws_region }}" helm upgrade --install \
+              petclinic-app-release stable-petclinic/petclinic_chart \
+              --version "{{ chart_version }}" \
+              --namespace petclinic-dev \
+              --wait --timeout 10m
+          args:
+            executable: /bin/bash
+
+      rescue:
+        - name: Collect Kubernetes diagnostics
+          ansible.builtin.shell: |
+            echo "=== CLUSTER NODES ==="
+            kubectl get nodes -o wide || true
+
+            echo "=== DEPLOYMENTS ==="
+            kubectl -n petclinic-dev get deployments || true
+
+            echo "=== POD STATUS ==="
+            kubectl -n petclinic-dev get pods -o wide || true
+
+            echo "=== RECENT EVENTS ==="
+            kubectl -n petclinic-dev get events \
+              --sort-by=.lastTimestamp | tail -n 80 || true
+
+            echo "=== POD DETAILS ==="
+            kubectl -n petclinic-dev describe pods \
+              | tail -n 250 || true
+
+          args:
+            executable: /bin/bash
+          register: deployment_diagnostics
+          changed_when: false
+
+        - name: Display diagnostics
+          ansible.builtin.debug:
+            var: deployment_diagnostics.stdout_lines
+
+        - name: Mark deployment as failed
+          ansible.builtin.fail:
+            msg: "Helm deployment failed. See Kubernetes diagnostics above."
+
