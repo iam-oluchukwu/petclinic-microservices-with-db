@@ -29,7 +29,7 @@ spec:
             secretKeyRef:
               name: petclinic-mysql-credentials
               key: root-password
-        image: mysql:5.7.8
+        image: mysql:5.7.44
         name: mysql-server
         ports:
         - containerPort: 3306
