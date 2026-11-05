@@ -43,7 +43,7 @@
       args:
         executable: /bin/bash
 
-      
+
     - name: Create Petclinic MySQL credentials
       no_log: true
       environment:
@@ -55,7 +55,7 @@
           --dry-run=client -o yaml | kubectl apply -f -
       args:
         executable: /bin/bash
-  
+
 
     - name: Create or update ECR image pull secret
       no_log: true
