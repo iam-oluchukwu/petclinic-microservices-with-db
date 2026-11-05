@@ -1,0 +1,73 @@
+---
+- name: Deploy Petclinic to Kubernetes
+  hosts: role_master
+  gather_facts: false
+
+  vars:
+    aws_region: "{{ lookup('env', 'AWS_REGION') | default('us-east-1', true) }}"
+    chart_version: "{{ lookup('env', 'HELM_CHART_VERSION') | default('0.0.2', true) }}"
+    helm_repo_url: "s3://petclinic-helm-charts-083127296249-msp17/stable/myapp/"
+    docker_config: "{{ lookup('env', 'JENKINS_HOME') }}/.docker/config.json"
+
+  tasks:
+    - name: Create Docker configuration directory
+      become: true
+      ansible.builtin.file:
+        path: /home/ubuntu/.docker
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0700'
+
+    - name: Copy ECR Docker credentials
+      become: true
+      no_log: true
+      ansible.builtin.copy:
+        src: "{{ docker_config }}"
+        dest: /home/ubuntu/.docker/config.json
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    - name: Install Helm S3 plugin if missing
+      ansible.builtin.shell: |
+        helm plugin list | awk 'NR>1 {print $1}' | grep -qx s3 ||
+        helm plugin install https://github.com/hypnoglow/helm-s3.git
+      args:
+        executable: /bin/bash
+
+    - name: Create Petclinic namespace
+      ansible.builtin.shell: |
+        kubectl create namespace petclinic-dev \
+          --dry-run=client -o yaml | kubectl apply -f -
+      args:
+        executable: /bin/bash
+
+    - name: Create or update ECR image pull secret
+      no_log: true
+      ansible.builtin.shell: |
+        kubectl -n petclinic-dev create secret generic regcred \
+          --from-file=.dockerconfigjson=/home/ubuntu/.docker/config.json \
+          --type=kubernetes.io/dockerconfigjson \
+          --dry-run=client -o yaml | kubectl apply -f -
+      args:
+        executable: /bin/bash
+
+    - name: Configure Helm S3 repository
+      ansible.builtin.shell: |
+        AWS_REGION="{{ aws_region }}" helm repo add \
+          stable-petclinic "{{ helm_repo_url }}" --force-update
+
+        AWS_REGION="{{ aws_region }}" helm repo update
+      args:
+        executable: /bin/bash
+
+    - name: Deploy Petclinic Helm release
+      ansible.builtin.shell: |
+        AWS_REGION="{{ aws_region }}" helm upgrade --install \
+          petclinic-app-release stable-petclinic/petclinic_chart \
+          --version "{{ chart_version }}" \
+          --namespace petclinic-dev \
+          --wait --timeout 10m
+      args:
+        executable: /bin/bash
