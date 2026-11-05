@@ -68,7 +68,36 @@ pipeline {
                     modules.each { m ->
                         def ver = sh(script: "sed -n 's/^version=//p' '${m.folder}/target/maven-archiver/pom.properties' | head -n 1", returnStdout: true).trim()
                         if (!ver) { error("Maven version missing for ${m.folder}") }
-                        env["IMAGE_TAG_${m.suffix}"] = "${env.ECR_REGISTRY}/${env.APP_REPO_NAME}:${m.tag}-v${ver}-b${env.BUILD_NUMBER}"
+                        def imageTag = "${env.ECR_REGISTRY}/${env.APP_REPO_NAME}:${m.tag}-v${ver}-b${env.BUILD_NUMBER}"
+
+                        switch (m.suffix) {
+                            case 'ADMIN_SERVER':
+                                env.IMAGE_TAG_ADMIN_SERVER = imageTag
+                                break
+                            case 'API_GATEWAY':
+                                env.IMAGE_TAG_API_GATEWAY = imageTag
+                                break
+                            case 'CONFIG_SERVER':
+                                env.IMAGE_TAG_CONFIG_SERVER = imageTag
+                                break
+                            case 'CUSTOMERS_SERVICE':
+                                env.IMAGE_TAG_CUSTOMERS_SERVICE = imageTag
+                                break
+                            case 'DISCOVERY_SERVER':
+                                env.IMAGE_TAG_DISCOVERY_SERVER = imageTag
+                                break
+                            case 'HYSTRIX_DASHBOARD':
+                                env.IMAGE_TAG_HYSTRIX_DASHBOARD = imageTag
+                                break
+                            case 'VETS_SERVICE':
+                                env.IMAGE_TAG_VETS_SERVICE = imageTag
+                                break
+                            case 'VISITS_SERVICE':
+                                env.IMAGE_TAG_VISITS_SERVICE = imageTag
+                                break
+                            default:
+                                error("Unknown module: ${m.suffix}")
+                        }
                     }
                     env.IMAGE_TAG_GRAFANA_SERVICE = "${env.ECR_REGISTRY}/${env.APP_REPO_NAME}:grafana-service"
                     env.IMAGE_TAG_PROMETHEUS_SERVICE = "${env.ECR_REGISTRY}/${env.APP_REPO_NAME}:prometheus-service"
