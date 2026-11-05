@@ -1,0 +1,6 @@
+apiVersion: v2
+name: petclinic_chart
+description: A Helm chart for Kubernetes
+type: application
+version: HELM_VERSION
+appVersion: 0.1.0
