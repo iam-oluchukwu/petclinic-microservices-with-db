@@ -12,7 +12,7 @@ chrome_options.add_argument("--disable-dev-shm-usage")
 
 # Get the Petclinic application address
 APP_IP = os.environ["MASTER_PUBLIC_IP"]
-url = "http://" + APP_IP.strip() + ":8080/"
+url = "http://" + APP_IP.strip() + ":30001/"
 
 print("Opening:", url)
 

@@ -12,7 +12,7 @@ options.add_argument("--disable-dev-shm-usage")
 
 # Petclinic application URL
 APP_IP = os.environ["MASTER_PUBLIC_IP"]
-url = f"http://{APP_IP.strip()}:8080/"
+url = f"http://{APP_IP.strip()}:30001/"
 
 driver = webdriver.Chrome(options=options)
 

@@ -13,7 +13,7 @@ options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 
 APP_IP = os.environ["MASTER_PUBLIC_IP"]
-url = f"http://{APP_IP.strip()}:8080/"
+url = f"http://{APP_IP.strip()}:30001/"
 
 driver = webdriver.Chrome(options=options)
 
