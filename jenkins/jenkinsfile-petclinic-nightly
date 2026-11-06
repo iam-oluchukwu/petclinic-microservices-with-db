@@ -364,29 +364,39 @@ pipeline {
                     }
                 }
 
-                // Check that the Petclinic gateway responds.
+                // Wait for downstream API readiness, not just the gateway.
                 sh '''
                   set -eu
 
-                  echo "=== Waiting for Petclinic Gateway ==="
+                  API_URL="http://${MASTER_PUBLIC_IP}:30001/api/customer/owners"
+                  BODY=$(mktemp)
+                  trap 'rm -f "$BODY"' EXIT
 
-                  for attempt in $(seq 1 48); do
-                    if curl \
-                        --fail \
-                        --silent \
-                        --show-error \
-                        --max-time 5 \
-                        -o /dev/null \
-                        "http://${MASTER_PUBLIC_IP}:30001/"; then
+                  echo "=== Waiting for Owners API readiness ==="
+                  consecutive=0
 
-                      echo "Petclinic is reachable on ${MASTER_PUBLIC_IP}:30001"
+                  for attempt in $(seq 1 36); do
+                    STATUS=$(curl -sS --connect-timeout 3 --max-time 10 -o "$BODY" -w '%{http_code}' "$API_URL" || true)
+
+                    echo "Owners API attempt $attempt/36: HTTP $STATUS"
+
+                    if [ "$STATUS" = "200" ]; then
+                      consecutive=$((consecutive + 1))
+                    else
+                      consecutive=0
+                    fi
+
+                    if [ "$consecutive" -ge 2 ]; then
+                      echo "SUCCESS: Owners API is responding consistently"
                       exit 0
                     fi
 
                     sleep 10
                   done
 
-                  echo 'Petclinic did not become ready within the allotted checks.' >&2
+                  echo "FAILED: Owners API did not become ready" >&2
+                  head -c 1000 "$BODY" >&2 || true
+                  echo >&2
                   exit 1
                 '''
 
