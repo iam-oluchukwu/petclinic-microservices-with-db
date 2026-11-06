@@ -472,7 +472,7 @@ pipeline {
         always {
             script {
                 boolean safeToDeleteKey = (env.QA_TF_STARTED != 'true')
-                
+
                 // Collect QA diagnostics before Terraform cleanup
                 if (env.QA_TF_STARTED == 'true' &&
                     currentBuild.currentResult != 'SUCCESS') {
