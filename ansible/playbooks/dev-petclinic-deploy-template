@@ -118,6 +118,35 @@
           ansible.builtin.debug:
             var: deployment_diagnostics.stdout_lines
 
+
+        - name: Collect application logs
+          ansible.builtin.shell: |
+            for service in mysql-server customers-service vets-service visits-service; do
+              echo "===== $service ====="
+              pods=$(kubectl -n petclinic-dev get pods \
+                -l "io.kompose.service=$service" \
+                -o jsonpath='{.items[*].metadata.name}')
+
+              for pod in $pods; do
+                echo "=== Previous logs: $pod ==="
+                kubectl -n petclinic-dev logs "$pod" \
+                  -c "$service" --previous --tail=80 2>&1 || true
+
+                echo "=== Current logs: $pod ==="
+                kubectl -n petclinic-dev logs "$pod" \
+                  -c "$service" --tail=80 2>&1 || true
+              done
+            done
+          args:
+            executable: /bin/bash
+          register: application_logs
+          changed_when: false
+
+        - name: Display application logs
+          ansible.builtin.debug:
+            var: application_logs.stdout_lines
+
+
         - name: Mark deployment as failed
           ansible.builtin.fail:
             msg: "Helm deployment failed. See Kubernetes diagnostics above."
