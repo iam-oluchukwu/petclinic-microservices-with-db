@@ -3,6 +3,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 import os
 import random
 
@@ -42,7 +43,7 @@ try:
         "lastName": "Clarusway",
         "address": "Ridge Corp. Street",
         "city": "McLean",
-        "telephone": "+1230576803"
+        "telephone": "1230576803"
     }
 
     for name, value in fields.items():
@@ -58,10 +59,31 @@ try:
         By.NAME, "telephone"
     ).send_keys(Keys.ENTER)
 
+    
     # Verify registration succeeded
-    WebDriverWait(driver, 30).until(
-        lambda d: first_name in d.page_source
-    )
+    try:
+        WebDriverWait(driver, 30).until(
+            lambda d: first_name in d.page_source
+        )
+    except TimeoutException:
+        print("Registration confirmation timed out")
+        print("Current URL:", driver.current_url)
+        print("Page title:", driver.title)
+
+        errors = driver.find_elements(
+            By.CSS_SELECTOR,
+            ".alert-danger, .invalid-feedback, "
+            ".help-block, .error, [role='alert']"
+        )
+        print("Validation errors:", [
+            e.text for e in errors if e.text
+        ])
+
+        print("Page text:",
+              driver.find_element(
+                  By.TAG_NAME, "body"
+              ).text[:2000])
+        raise
 
     print(first_name, "was successfully registered")
     print("Test Passed")
