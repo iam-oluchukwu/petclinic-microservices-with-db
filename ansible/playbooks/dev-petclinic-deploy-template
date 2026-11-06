@@ -44,6 +44,13 @@
         executable: /bin/bash
 
 
+    - name: Verify MySQL credential is available
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'MYSQL_ROOT_PASSWORD') | length > 0
+        fail_msg: "MySQL credential is missing or empty"
+      no_log: true
+
     - name: Create Petclinic MySQL credentials
       no_log: true
       environment:

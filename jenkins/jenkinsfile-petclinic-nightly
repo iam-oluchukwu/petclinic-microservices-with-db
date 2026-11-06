@@ -313,8 +313,8 @@ pipeline {
                     "petclinic_chart-${HELM_CHART_VERSION}.tgz" \
                     stable-petclinic
 
-                  envsubst < ansible/playbooks/dev-petclinic-deploy-template \
-                    > ansible/playbooks/dev-petclinic-deploy.yaml
+                  cp ansible/playbooks/dev-petclinic-deploy-template \
+                    ansible/playbooks/dev-petclinic-deploy.yaml
                 '''
 
                 withCredentials([
