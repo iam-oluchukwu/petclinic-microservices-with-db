@@ -472,6 +472,29 @@ pipeline {
         always {
             script {
                 boolean safeToDeleteKey = (env.QA_TF_STARTED != 'true')
+                
+                // Collect QA diagnostics before Terraform cleanup
+                if (env.QA_TF_STARTED == 'true' &&
+                    currentBuild.currentResult != 'SUCCESS') {
+
+                    echo '=== Collecting Kubernetes diagnostics ==='
+
+                    sh(
+                        script: '''
+                          ansible \
+                            -i ansible/inventory/dev_stack_dynamic_inventory_aws_ec2.yaml \
+                            role_master \
+                            -m shell \
+                            -a 'kubectl -n petclinic-dev get pods -o wide;
+                                kubectl -n petclinic-dev get events --sort-by=.lastTimestamp | tail -n 40;
+                                for svc in mysql-server customers-service api-gateway; do
+                                  echo "=== $svc logs ===";
+                                  kubectl -n petclinic-dev logs -l io.kompose.service="$svc" --all-containers=true --prefix=true --max-log-requests=10 --tail=100;
+                                done'
+                        ''',
+                        returnStatus: true
+                    )
+                }
 
                 if (env.QA_TF_STARTED == 'true') {
                     def rc = sh(
