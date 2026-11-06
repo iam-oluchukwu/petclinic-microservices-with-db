@@ -1,3 +1,4 @@
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,6 +9,7 @@ metadata:
   labels:
     io.kompose.service: customers-service
   name: customers-service
+
 spec:
   replicas: 2
   selector:
@@ -23,19 +25,44 @@ spec:
         io.kompose.service: customers-service
     spec:
       containers:
-      - image: '{{ .Values.IMAGE_TAG_CUSTOMERS_SERVICE }}'
-        name: customers-service
-        ports:
-        - containerPort: 8081
-          protocol: TCP
+        - name: customers-service
+          image: '{{ .Values.IMAGE_TAG_CUSTOMERS_SERVICE }}'
+          ports:
+            - containerPort: 8081
+              protocol: TCP
+          env:
+            - name: SPRING_DATASOURCE_USERNAME
+              value: "root"
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: petclinic-mysql-credentials
+                  key: root-password
+
       imagePullSecrets:
-      - name: regcred
+        - name: regcred
+
       restartPolicy: Always
+
       initContainers:
-      - name: wait-for-discovery-server
-        image: busybox:1.36
-        command:
-        - sh
-        - -c
-        - until nc -z discovery-server 8761; do echo waiting for discovery-server;
-          sleep 2; done
+        - name: wait-for-discovery-server
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z discovery-server 8761; do
+                echo "Waiting for discovery-server"
+                sleep 2
+              done
+
+        - name: wait-for-mysql-server
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z mysql-server 3306; do
+                echo "Waiting for MySQL"
+                sleep 2
+              done
