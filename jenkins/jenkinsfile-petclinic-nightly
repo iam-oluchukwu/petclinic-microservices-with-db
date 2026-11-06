@@ -1,0 +1,543 @@
+
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 150, unit: 'MINUTES')
+    }
+
+    // Enable only after a successful full QA run on dev:
+    // triggers { cron('0 0 * * *') }
+
+    parameters {
+        booleanParam(
+            name: 'PROVISION_QA',
+            defaultValue: false,
+            description: 'Create and destroy temporary Kubernetes QA nodes. Leave unchecked during validation.'
+        )
+        string(
+            name: 'ADMIN_CIDR',
+            defaultValue: '77.64.176.36/32',
+            description: 'Current administrator public IPv4 /32 CIDR; update whenever it changes.'
+        )
+    }
+
+    environment {
+        APP_NAME = 'petclinic'
+        APP_REPO_NAME = 'clarusway-repo/petclinic-app-dev'
+        AWS_REGION = 'us-east-1'
+        AWS_DEFAULT_REGION = 'us-east-1'
+        HELM_REPO_URL = 's3://petclinic-helm-charts-083127296249-msp17/stable/myapp/'
+        DNS_NAME = 'qa-petclinic.example.com'
+        ANSIBLE_HOST_KEY_CHECKING = 'False' // Lab only
+    }
+
+    stages {
+
+        stage('Initialize') {
+            steps {
+                script {
+                    env.AWS_ACCOUNT_ID = sh(
+                        script: 'aws sts get-caller-identity --query Account --output text',
+                        returnStdout: true
+                    ).trim()
+
+                    env.ECR_REGISTRY = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+
+                    env.QA_KEY_NAME = "petclinic-qa-nightly-${env.BUILD_NUMBER}"
+                    env.QA_KEY_FILE = "${env.WORKSPACE}/${env.QA_KEY_NAME}.pem"
+                    env.ANSIBLE_PRIVATE_KEY_FILE = env.QA_KEY_FILE
+                    env.HELM_CHART_VERSION = "0.18.${env.BUILD_NUMBER}"
+                    env.QA_KEY_CREATED = 'false'
+                    env.QA_TF_STARTED = 'false'
+                }
+            }
+        }
+
+        stage('Create ECR Repo') {
+            steps {
+                sh '''
+                  set -eu
+
+                  aws ecr describe-repositories --region "$AWS_REGION" \
+                    --repository-names "$APP_REPO_NAME" >/dev/null || \
+                  aws ecr create-repository --region "$AWS_REGION" \
+                    --repository-name "$APP_REPO_NAME" \
+                    --image-scanning-configuration scanOnPush=true
+                '''
+            }
+        }
+
+        stage('Package Application') {
+            steps {
+                sh 'bash jenkins/package-with-maven-container.sh'
+            }
+        }
+
+        stage('Prepare Tags for Docker Images') {
+            steps {
+                script {
+                    def modules = [
+                        [suffix: 'ADMIN_SERVER',       folder: 'spring-petclinic-admin-server',       tag: 'admin-server'],
+                        [suffix: 'API_GATEWAY',        folder: 'spring-petclinic-api-gateway',        tag: 'api-gateway'],
+                        [suffix: 'CONFIG_SERVER',     folder: 'spring-petclinic-config-server',      tag: 'config-server'],
+                        [suffix: 'CUSTOMERS_SERVICE', folder: 'spring-petclinic-customers-service',  tag: 'customers-service'],
+                        [suffix: 'DISCOVERY_SERVER',  folder: 'spring-petclinic-discovery-server',   tag: 'discovery-server'],
+                        [suffix: 'HYSTRIX_DASHBOARD', folder: 'spring-petclinic-hystrix-dashboard',  tag: 'hystrix-dashboard'],
+                        [suffix: 'VETS_SERVICE',      folder: 'spring-petclinic-vets-service',       tag: 'vets-service'],
+                        [suffix: 'VISITS_SERVICE',    folder: 'spring-petclinic-visits-service',     tag: 'visits-service']
+                    ]
+
+                    modules.each { m ->
+                        def ver = sh(
+                            script: "sed -n 's/^version=//p' '${m.folder}/target/maven-archiver/pom.properties' | head -n 1",
+                            returnStdout: true
+                        ).trim()
+
+                        if (!ver) {
+                            error("Maven version missing for ${m.folder}")
+                        }
+
+                        def imageTag = "${env.ECR_REGISTRY}/${env.APP_REPO_NAME}:${m.tag}-v${ver}-b${env.BUILD_NUMBER}"
+
+                        switch (m.suffix) {
+                            case 'ADMIN_SERVER':
+                                env.IMAGE_TAG_ADMIN_SERVER = imageTag
+                                break
+                            case 'API_GATEWAY':
+                                env.IMAGE_TAG_API_GATEWAY = imageTag
+                                break
+                            case 'CONFIG_SERVER':
+                                env.IMAGE_TAG_CONFIG_SERVER = imageTag
+                                break
+                            case 'CUSTOMERS_SERVICE':
+                                env.IMAGE_TAG_CUSTOMERS_SERVICE = imageTag
+                                break
+                            case 'DISCOVERY_SERVER':
+                                env.IMAGE_TAG_DISCOVERY_SERVER = imageTag
+                                break
+                            case 'HYSTRIX_DASHBOARD':
+                                env.IMAGE_TAG_HYSTRIX_DASHBOARD = imageTag
+                                break
+                            case 'VETS_SERVICE':
+                                env.IMAGE_TAG_VETS_SERVICE = imageTag
+                                break
+                            case 'VISITS_SERVICE':
+                                env.IMAGE_TAG_VISITS_SERVICE = imageTag
+                                break
+                            default:
+                                error("Unknown module: ${m.suffix}")
+                        }
+                    }
+
+                    env.IMAGE_TAG_GRAFANA_SERVICE = "${env.ECR_REGISTRY}/${env.APP_REPO_NAME}:grafana-service"
+                    env.IMAGE_TAG_PROMETHEUS_SERVICE = "${env.ECR_REGISTRY}/${env.APP_REPO_NAME}:prometheus-service"
+                }
+            }
+        }
+
+        stage('Build App Docker Images') {
+            steps {
+                sh 'bash jenkins/build-dev-docker-images-for-ecr.sh'
+            }
+        }
+
+        stage('Push Images to ECR Repo') {
+            steps {
+                sh 'bash jenkins/push-dev-docker-images-to-ecr.sh'
+            }
+        }
+
+        stage('QA Preflight') {
+            when {
+                expression { return params.PROVISION_QA }
+            }
+
+            steps {
+                sh '''
+                  set -eu
+
+                  test -n "$ADMIN_CIDR"
+
+                  test -f ansible/playbooks/k8s_setup.yaml
+                  test -f ansible/playbooks/dev-petclinic-deploy-template
+                  test -f ansible/playbooks/pb_run_selenium_jobs.yaml
+
+                  grep -q 'var.qa_key_name' infrastructure/dev-k8s-terraform/main.tf
+
+                  command -v terraform
+                  command -v ansible-playbook
+                  command -v helm
+                  command -v envsubst
+
+                  helm plugin list | grep -q '^s3[[:space:]]'
+
+                  aws s3 ls "$HELM_REPO_URL" >/dev/null
+
+                  test -f "$JENKINS_HOME/.docker/config.json"
+
+                  EXISTING=$(aws ec2 describe-instances \
+                    --region "$AWS_REGION" \
+                    --filters \
+                      'Name=tag:Project,Values=tera-kube-ans' \
+                      'Name=instance-state-name,Values=pending,running,stopping,stopped' \
+                    --query 'Reservations[].Instances[].InstanceId' \
+                    --output text)
+
+                  if [ -n "$EXISTING" ]; then
+                    echo 'QA instances already exist. Refusing to create a second cluster.' >&2
+                    exit 1
+                  fi
+                '''
+
+                withCredentials([
+                    string(
+                        credentialsId: 'petclinic-qa-mysql-root',
+                        variable: 'MYSQL_ROOT_PASSWORD'
+                    )
+                ]) {
+                    sh 'test -n "$MYSQL_ROOT_PASSWORD"'
+                }
+            }
+        }
+
+        stage('Create Key Pair for Ansible') {
+            when {
+                expression { return params.PROVISION_QA }
+            }
+
+            steps {
+                sh '''
+                  set -eu
+                  umask 077
+
+                  aws ec2 create-key-pair \
+                    --region "$AWS_REGION" \
+                    --key-name "$QA_KEY_NAME" \
+                    --query KeyMaterial \
+                    --output text > "$QA_KEY_FILE"
+
+                  chmod 600 "$QA_KEY_FILE"
+                '''
+
+                script {
+                    env.QA_KEY_CREATED = 'true'
+                }
+            }
+        }
+
+        stage('Create QA Automation Infrastructure') {
+            when {
+                expression { return params.PROVISION_QA }
+            }
+
+            steps {
+                script {
+                    env.QA_TF_STARTED = 'true'
+                }
+
+                sh '''
+                  set -eu
+
+                  terraform -chdir=infrastructure/dev-k8s-terraform init \
+                    -input=false
+
+                  terraform -chdir=infrastructure/dev-k8s-terraform apply \
+                    -auto-approve \
+                    -no-color \
+                    -input=false \
+                    -var="admin_cidr=${ADMIN_CIDR}" \
+                    -var="qa_key_name=${QA_KEY_NAME}"
+
+                  MASTER_ID=$(aws ec2 describe-instances \
+                    --region "$AWS_REGION" \
+                    --filters \
+                      'Name=tag:Project,Values=tera-kube-ans' \
+                      'Name=tag:Role,Values=master' \
+                      'Name=instance-state-name,Values=running' \
+                    --query 'Reservations[].Instances[].InstanceId' \
+                    --output text)
+
+                  test -n "$MASTER_ID"
+
+                  aws ec2 wait instance-status-ok \
+                    --region "$AWS_REGION" \
+                    --instance-ids $MASTER_ID
+                '''
+            }
+        }
+
+        stage('Create Kubernetes Cluster for QA Automation Build') {
+            when {
+                expression { return params.PROVISION_QA }
+            }
+
+            steps {
+                sh '''
+                  ansible-playbook \
+                    -i ansible/inventory/dev_stack_dynamic_inventory_aws_ec2.yaml \
+                    ansible/playbooks/k8s_setup.yaml
+                '''
+            }
+        }
+
+        stage('Deploy App on Kubernetes cluster') {
+            when {
+                expression { return params.PROVISION_QA }
+            }
+
+            steps {
+                sh '''
+                  set -eu
+
+                  mkdir -p .nightly-chart
+
+                  cp -a k8s/petclinic_chart/. .nightly-chart/
+
+                  envsubst < k8s/petclinic_chart/values-template.yaml \
+                    > .nightly-chart/values.yaml
+
+                  sed -i "s/^version: HELM_VERSION$/version: ${HELM_CHART_VERSION}/" \
+                    .nightly-chart/Chart.yaml
+
+                  helm lint .nightly-chart
+
+                  helm package .nightly-chart --destination .
+
+                  helm repo add stable-petclinic \
+                    "$HELM_REPO_URL" --force-update
+
+                  HELM_S3_MODE=3 helm s3 push --force \
+                    "petclinic_chart-${HELM_CHART_VERSION}.tgz" \
+                    stable-petclinic
+
+                  cp ansible/playbooks/dev-petclinic-deploy-template \
+                    ansible/playbooks/dev-petclinic-deploy.yaml
+                '''
+
+                withCredentials([
+                    string(
+                        credentialsId: 'petclinic-qa-mysql-root',
+                        variable: 'MYSQL_ROOT_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+                      set -eu
+
+                      ansible-playbook \
+                        -i ansible/inventory/dev_stack_dynamic_inventory_aws_ec2.yaml \
+                        ansible/playbooks/dev-petclinic-deploy.yaml
+                    '''
+                }
+            }
+        }
+
+        stage('Test the Application Deployment') {
+            when {
+                expression { return params.PROVISION_QA }
+            }
+
+            steps {
+                script {
+                    // Use private IP because Jenkins is in the same VPC.
+                    // MASTER_PUBLIC_IP is the legacy Selenium variable.
+
+                    env.MASTER_PUBLIC_IP = sh(
+                        script: '''
+                          aws ec2 describe-instances \
+                            --region "$AWS_REGION" \
+                            --filters \
+                              'Name=tag:Project,Values=tera-kube-ans' \
+                              'Name=tag:Role,Values=master' \
+                              'Name=instance-state-name,Values=running' \
+                            --query 'Reservations[].Instances[].PrivateIpAddress' \
+                            --output text
+                        ''',
+                        returnStdout: true
+                    ).trim()
+
+                    if (!env.MASTER_PUBLIC_IP ||
+                        env.MASTER_PUBLIC_IP.contains(' ')) {
+                        error('Expected one QA master private IP')
+                    }
+                }
+
+                // Wait for downstream API readiness, not just the gateway.
+                sh '''
+                  set -eu
+
+                  API_URL="http://${MASTER_PUBLIC_IP}:30001/api/customer/owners"
+                  BODY=$(mktemp)
+                  trap 'rm -f "$BODY"' EXIT
+
+                  echo "=== Waiting for Owners API readiness ==="
+                  consecutive=0
+
+                  for attempt in $(seq 1 36); do
+                    STATUS=$(curl -sS --connect-timeout 3 --max-time 10 -o "$BODY" -w '%{http_code}' "$API_URL" || true)
+
+                    echo "Owners API attempt $attempt/36: HTTP $STATUS"
+
+                    if [ "$STATUS" = "200" ]; then
+                      consecutive=$((consecutive + 1))
+                    else
+                      consecutive=0
+                    fi
+
+                    if [ "$consecutive" -ge 2 ]; then
+                      echo "SUCCESS: Owners API is responding consistently"
+                      exit 0
+                    fi
+
+                    sleep 10
+                  done
+
+                  echo "FAILED: Owners API did not become ready" >&2
+                  head -c 1000 "$BODY" >&2 || true
+                  echo >&2
+                  exit 1
+                '''
+
+                // Verify Customers Service GET and POST through gateway.
+                // This checks database access before Selenium starts.
+                sh '''
+                  set -eu
+
+                  API_URL="http://${MASTER_PUBLIC_IP}:30001/api/customer/owners"
+
+                  GET_BODY="$(mktemp)"
+                  POST_BODY="$(mktemp)"
+
+                  trap 'rm -f "$GET_BODY" "$POST_BODY"' EXIT
+
+                  echo "=== Verify Owners API GET ==="
+
+                  GET_STATUS=$(curl \
+                    -sS \
+                    --max-time 20 \
+                    -o "$GET_BODY" \
+                    -w '%{http_code}' \
+                    "$API_URL" || true)
+
+                  echo "GET HTTP status: $GET_STATUS"
+
+                  echo "=== GET Response Body ==="
+                  head -c 1000 "$GET_BODY"
+                  echo
+
+                  if [ "$GET_STATUS" != "200" ]; then
+                    echo "FAILED: Owners API GET did not return HTTP 200" >&2
+                    exit 1
+                  fi
+
+                  echo "SUCCESS: Owners API GET passed"
+
+                  echo "=== Verify Owners API POST ==="
+
+                  POST_STATUS=$(curl \
+                    -sS \
+                    --max-time 30 \
+                    -o "$POST_BODY" \
+                    -w '%{http_code}' \
+                    -X POST "$API_URL" \
+                    -H 'Content-Type: application/json' \
+                    --data '{
+                      "firstName": "QASmokeTest",
+                      "lastName": "Clarusway",
+                      "address": "123 Test Street",
+                      "city": "McLean",
+                      "telephone": "1234567890"
+                    }' || true)
+
+                  echo "POST HTTP status: $POST_STATUS"
+
+                  echo "=== POST Response Body ==="
+                  head -c 2000 "$POST_BODY"
+                  echo
+
+                  if [ "$POST_STATUS" != "201" ]; then
+                    echo "FAILED: Owners API POST did not return HTTP 201" >&2
+                    exit 1
+                  fi
+
+                  echo "SUCCESS: Owners API GET and POST both passed"
+                '''
+            }
+        }
+
+        stage('Run QA Automation Tests') {
+            when {
+                expression { return params.PROVISION_QA }
+            }
+
+            steps {
+                sh 'bash ansible/scripts/run_selenium_jobs.sh'
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                boolean safeToDeleteKey = (env.QA_TF_STARTED != 'true')
+
+                // Collect QA diagnostics before Terraform cleanup
+                if (env.QA_TF_STARTED == 'true' &&
+                    currentBuild.currentResult != 'SUCCESS') {
+
+                    echo '=== Collecting Kubernetes diagnostics ==='
+
+                    sh(
+                        script: '''
+                          ansible \
+                            -i ansible/inventory/dev_stack_dynamic_inventory_aws_ec2.yaml \
+                            role_master \
+                            -m shell \
+                            -a 'kubectl -n petclinic-dev get pods -o wide;
+                                kubectl -n petclinic-dev get events --sort-by=.lastTimestamp | tail -n 40;
+                                for svc in mysql-server customers-service api-gateway; do
+                                  echo "=== $svc logs ===";
+                                  kubectl -n petclinic-dev logs -l io.kompose.service="$svc" --all-containers=true --prefix=true --max-log-requests=10 --tail=100;
+                                done'
+                        ''',
+                        returnStatus: true
+                    )
+                }
+
+                if (env.QA_TF_STARTED == 'true') {
+                    def rc = sh(
+                        script: '''
+                          terraform -chdir=infrastructure/dev-k8s-terraform destroy \
+                            -auto-approve \
+                            -no-color \
+                            -input=false \
+                            -var="admin_cidr=${ADMIN_CIDR}" \
+                            -var="qa_key_name=${QA_KEY_NAME}"
+                        ''',
+                        returnStatus: true
+                    )
+
+                    safeToDeleteKey = (rc == 0)
+
+                    if (!safeToDeleteKey) {
+                        echo 'WARNING: Terraform destroy failed. Key pair and workspace are being preserved for recovery.'
+                    }
+                }
+
+                if (safeToDeleteKey && env.QA_KEY_CREATED == 'true') {
+                    sh '''
+                      aws ec2 delete-key-pair \
+                        --region "$AWS_REGION" \
+                        --key-name "$QA_KEY_NAME" || true
+
+                      rm -f "$QA_KEY_FILE"
+                    '''
+                }
+
+                echo 'ECR repository and Docker images are retained; this pipeline never deletes the shared repository.'
+            }
+        }
+    }
+}

@@ -1,0 +1,39 @@
+---
+- name: Run Petclinic Selenium Tests
+  hosts: all
+  gather_facts: false
+
+  vars:
+    test_files: "{{ query('fileglob', workspace ~ '/selenium-jobs/test*.py') }}"
+
+  tasks:
+    - name: Verify Selenium tests exist
+      ansible.builtin.assert:
+        that:
+          - test_files | length > 0
+        fail_msg: "No Selenium test files found"
+
+    - name: Run all Selenium tests
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - -e
+          - "MASTER_PUBLIC_IP={{ master_public_ip }}"
+          - -v
+          - "{{ workspace }}:{{ workspace }}"
+          - -w
+          - "{{ workspace }}"
+          - clarusway/selenium-py-chrome:latest
+          - python
+          - "{{ item }}"
+      loop: "{{ test_files }}"
+      register: output
+
+    - name: Display Selenium test results
+      ansible.builtin.debug:
+        msg: "{{ item.stdout }}"
+      loop: "{{ output.results }}"
+      loop_control:
+        label: "{{ item.item }}"

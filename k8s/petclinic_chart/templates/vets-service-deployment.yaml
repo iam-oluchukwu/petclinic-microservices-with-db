@@ -25,6 +25,14 @@ spec:
       containers:
       - image: '{{ .Values.IMAGE_TAG_VETS_SERVICE }}'
         name: vets-service
+        env:
+        - name: SPRING_DATASOURCE_USERNAME
+          value: "root"
+        - name: SPRING_DATASOURCE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: petclinic-mysql-credentials
+              key: root-password
         ports:
         - containerPort: 8083
           protocol: TCP
