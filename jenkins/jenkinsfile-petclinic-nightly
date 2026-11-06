@@ -9,12 +9,12 @@ pipeline {
     }
 
     // Enable only after a successful full QA run on dev:
-    // triggers { cron('0 0 * * *') }
+    triggers { cron('0 0 * * *') }
 
     parameters {
         booleanParam(
             name: 'PROVISION_QA',
-            defaultValue: false,
+            defaultValue: true,
             description: 'Create and destroy temporary Kubernetes QA nodes. Leave unchecked during validation.'
         )
         string(
