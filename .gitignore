@@ -33,3 +33,6 @@ generated/
 **/.terraform.tfstate.lock.info
 **/crash.log
 **/crash.*.log
+
+# Nexus administrator password
+initialpasswd.txt
