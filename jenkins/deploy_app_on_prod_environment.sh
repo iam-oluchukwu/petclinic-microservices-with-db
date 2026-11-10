@@ -22,7 +22,6 @@ echo "=== Verify Jenkins environment ==="
 : "${BUILD_NUMBER:?BUILD_NUMBER is required}"
 : "${AWS_REGION:?AWS_REGION is required}"
 : "${DNS_NAME:?DNS_NAME is required}"
-: "${PROD_HELM_REPO_URL:?Production Helm repository URL is required}"
 
 cd "$WORKSPACE"
 
@@ -46,8 +45,8 @@ sed -i "s/HELM_VERSION/${BUILD_NUMBER}/" \
 
 echo "=== Configure production Helm repository ==="
 
-helm repo add prod-petclinic \
-  "$PROD_HELM_REPO_URL" --force-update
+helm repo add stable-petclinic \
+  "s3://petclinic-helm-charts-083127296249-msp17/stable/myapp/" --force-update
 
 helm repo update
 
@@ -58,7 +57,7 @@ helm package k8s/petclinic_chart
 echo "=== Push Helm chart to S3 ==="
 
 helm s3 push --force \
-  "petclinic_chart-${BUILD_NUMBER}.tgz" prod-petclinic
+  "petclinic_chart-${BUILD_NUMBER}.tgz" stable-petclinic
 
 echo "=== Create or update image pull credentials ==="
 
@@ -73,7 +72,7 @@ echo "=== Deploy production application ==="
 helm repo update
 
 helm upgrade --install petclinic-app-release \
-  prod-petclinic/petclinic_chart \
+  stable-petclinic/petclinic_chart \
   --version "${BUILD_NUMBER}" \
   --namespace petclinic-prod-ns \
   --wait \
