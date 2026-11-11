@@ -26,6 +26,8 @@ spec:
       - image: '{{ .Values.IMAGE_TAG_VISITS_SERVICE }}'
         name: visits-service
         env:
+        - name: SPRING_DATASOURCE_URL
+          value: "jdbc:mysql://mysql-server:3306/petclinic?sslMode=REQUIRED"
         - name: SPRING_DATASOURCE_USERNAME
           value: "root"
         - name: SPRING_DATASOURCE_PASSWORD
