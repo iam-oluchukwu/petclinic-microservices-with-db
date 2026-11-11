@@ -3,14 +3,10 @@ kind: Service
 metadata:
   annotations:
     kompose.cmd: kompose convert -f docker-compose.yml -o petclinic_chart/templates
-    kompose.version: 1.38.0 (a8f5d1cbd)
+    kompose.version: 1.34.0 (cbf2835db)
   labels:
     io.kompose.service: mysql-server
   name: mysql-server
 spec:
-  ports:
-    - name: "3306"
-      port: 3306
-      targetPort: 3306
-  selector:
-    io.kompose.service: mysql-server
+  type: ExternalName
+  externalName: petclinic.cwzei0so2mek.us-east-1.rds.amazonaws.com
