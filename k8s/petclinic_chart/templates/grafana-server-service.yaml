@@ -9,9 +9,12 @@ metadata:
     io.kompose.service: grafana-server
   name: grafana-server
 spec:
+  type: NodePort
   ports:
-    - name: "3000"
+    - name: "http"
       port: 3000
       targetPort: 3000
+      protocol: TCP
+      nodePort: 30003
   selector:
     io.kompose.service: grafana-server
